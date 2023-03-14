@@ -16,10 +16,7 @@ import io.debezium.connector.spanner.SpannerConnectorConfig;
 import io.debezium.connector.spanner.processor.SpannerEventDispatcher;
 import io.debezium.connector.spanner.task.TaskSyncContextHolder;
 
-/**
- * Generates watermark update messages to output topics with the latest
- * watermark value
- */
+/** Generates watermark update messages to output topics with the latest watermark value */
 public class LowWatermarkStampPublisher {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LowWatermarkStampPublisher.class);
@@ -37,28 +34,37 @@ public class LowWatermarkStampPublisher {
 
     private final TaskSyncContextHolder taskSyncContextHolder;
 
-    public LowWatermarkStampPublisher(SpannerConnectorConfig spannerConnectorConfig,
+    private final String taskUid;
+
+    public LowWatermarkStampPublisher(
+                                      SpannerConnectorConfig spannerConnectorConfig,
                                       SpannerEventDispatcher spannerEventDispatcher,
                                       Consumer<Throwable> errorHandler,
-                                      TaskSyncContextHolder taskSyncContextHolder) {
+                                      TaskSyncContextHolder taskSyncContextHolder,
+                                      String taskId) {
         this.publishInterval = spannerConnectorConfig.getLowWatermarkStampInterval();
         this.spannerEventDispatcher = spannerEventDispatcher;
         this.lowWatermarkEnabled = spannerConnectorConfig.isLowWatermarkEnabled();
         this.errorHandler = errorHandler;
         this.taskSyncContextHolder = taskSyncContextHolder;
+        this.taskUid = taskId;
     }
 
     public void init() {
-        if (!lowWatermarkEnabled || this.publisherThread != null) {
-            return;
-        }
+        /*
+         * if (!lowWatermarkEnabled || this.publisherThread != null) {
+         * return;
+         * }
+         */
         this.publisherThread = createPublisherThread();
     }
 
     public void start() {
-        if (!lowWatermarkEnabled) {
-            return;
-        }
+        /*
+         * if (!lowWatermarkEnabled) {
+         * return;
+         * }
+         */
 
         if (publisherThread.getState().equals(Thread.State.NEW)) {
             this.publisherThread.start();
@@ -82,41 +88,44 @@ public class LowWatermarkStampPublisher {
         while (this.publisherThread != null) {
         }
 
-        spannerEventDispatcher.publishLowWatermarkStampEvent();
+        spannerEventDispatcher.publishLowWatermarkStampEvent(this.taskUid);
     }
 
     private Thread createPublisherThread() {
-        Thread thread = new Thread(() -> {
-            try {
-                while (!taskSyncContextHolder.get().isInitialized() && !Thread.currentThread().isInterrupted()) {
-                }
-
-                while (!Thread.currentThread().isInterrupted()) {
+        Thread thread = new Thread(
+                () -> {
                     try {
-                        if (!suspendFlag.get()) {
-                            spannerEventDispatcher.publishLowWatermarkStampEvent();
+                        while (!taskSyncContextHolder.get().isInitialized()
+                                && !Thread.currentThread().isInterrupted()) {
                         }
 
-                        Thread.sleep(publishInterval.toMillis());
-                    }
-                    catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            }
-            finally {
-                this.publisherThread = null;
-            }
-        }, "SpannerConnector-LowWatermarkStampPublisher");
+                        while (!Thread.currentThread().isInterrupted()) {
+                            try {
+                                if (!suspendFlag.get()) {
+                                    spannerEventDispatcher.publishLowWatermarkStampEvent(this.taskUid);
+                                }
 
-        thread.setUncaughtExceptionHandler((t, ex) -> {
-            LOGGER.error("LowWatermarkStampPublisher execution error", ex);
-            this.publisherThread = null;
+                                Thread.sleep(publishInterval.toMillis());
+                            }
+                            catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                    }
+                    finally {
+                        this.publisherThread = null;
+                    }
+                },
+                "SpannerConnector-LowWatermarkStampPublisher");
 
-            this.errorHandler.accept(ex);
-        });
+        thread.setUncaughtExceptionHandler(
+                (t, ex) -> {
+                    LOGGER.error("LowWatermarkStampPublisher execution error", ex);
+                    this.publisherThread = null;
+
+                    this.errorHandler.accept(ex);
+                });
 
         return thread;
     }
-
 }

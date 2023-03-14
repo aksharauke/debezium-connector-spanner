@@ -14,6 +14,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 
 import io.debezium.connector.spanner.SpannerConnectorConfig;
+import io.debezium.connector.spanner.db.DaoFactory;
 import io.debezium.connector.spanner.db.stream.ChangeStream;
 import io.debezium.connector.spanner.exception.SpannerConnectorException;
 import io.debezium.connector.spanner.kafka.internal.TaskSyncPublisher;
@@ -35,8 +36,8 @@ import io.debezium.connector.spanner.task.state.TaskStateChangeEvent;
 /**
  * This class processes all types of TaskStateChangeEvents (i.e. LastCommitTimestampUpdateEvent,
  * NewPartitionsEvent, NewSchemaEvent, PartitionStatusUpdateEvent, SyncEvent, TaskStateChangeEvent).
- * This class is also responsible for sending change stream partitions that are ready to be
- * streamed to SynchronizedPartitionManager.
+ * This class is also responsible for sending change stream partitions that are ready to be streamed
+ * to SynchronizedPartitionManager.
  */
 public class TaskStateChangeEventHandler {
 
@@ -52,16 +53,19 @@ public class TaskStateChangeEventHandler {
     private final Runnable finishingHandler;
     private final SpannerConnectorConfig connectorConfig;
     private final Consumer<RuntimeException> errorHandler;
+    private final DaoFactory daoFactory;
 
     private final AtomicLong failOverloadedTaskTimer = new AtomicLong(System.currentTimeMillis());
 
-    public TaskStateChangeEventHandler(TaskSyncContextHolder taskSyncContextHolder,
+    public TaskStateChangeEventHandler(
+                                       TaskSyncContextHolder taskSyncContextHolder,
                                        TaskSyncPublisher taskSyncPublisher,
                                        ChangeStream changeStream,
                                        PartitionFactory partitionFactory,
                                        Runnable finishingHandler,
                                        SpannerConnectorConfig connectorConfig,
-                                       Consumer<RuntimeException> errorHandler) {
+                                       Consumer<RuntimeException> errorHandler,
+                                       DaoFactory daoFactory) {
         this.taskSyncContextHolder = taskSyncContextHolder;
         this.taskSyncPublisher = taskSyncPublisher;
         this.partitionFactory = partitionFactory;
@@ -69,6 +73,7 @@ public class TaskStateChangeEventHandler {
         this.finishingHandler = finishingHandler;
         this.connectorConfig = connectorConfig;
         this.errorHandler = errorHandler;
+        this.daoFactory = daoFactory;
     }
 
     public void processEvent(TaskStateChangeEvent syncEvent) throws InterruptedException {
@@ -91,7 +96,7 @@ public class TaskStateChangeEventHandler {
 
     private void processEvent(PartitionStatusUpdateEvent event) throws InterruptedException {
         performOperation(
-                new PartitionStatusUpdateOperation(event.getToken(), event.getState()),
+                new PartitionStatusUpdateOperation(event.getToken(), event.getState(), this.daoFactory),
                 new FindPartitionForStreamingOperation(),
                 new TakePartitionForStreamingOperation(changeStream, partitionFactory),
                 new RemoveFinishedPartitionOperation());
@@ -124,16 +129,17 @@ public class TaskStateChangeEventHandler {
             return;
         }
         synchronized (this) {
-            this.failOverloadedTaskTimer.getAndUpdate(start -> {
-                long now = System.currentTimeMillis();
+            this.failOverloadedTaskTimer.getAndUpdate(
+                    start -> {
+                        long now = System.currentTimeMillis();
 
-                if (start + connectorConfig.failOverloadedTaskInterval() < now) {
-                    checkToFailOverloadedTask(taskSyncContext);
-                    return now;
-                }
+                        if (start + connectorConfig.failOverloadedTaskInterval() < now) {
+                            checkToFailOverloadedTask(taskSyncContext);
+                            return now;
+                        }
 
-                return start;
-            });
+                        return start;
+                    });
         }
     }
 
@@ -143,8 +149,11 @@ public class TaskStateChangeEventHandler {
 
         if (currentTaskPartitions > connectorConfig.getDesiredPartitionsTasks()
                 && currentTaskPartitions > 2 * (totalPartitions / (taskSyncContext.getTaskStates().size() + 1))) {
-            errorHandler.accept(new SpannerConnectorException(
-                    String.format("Task is overloaded by assignments: %d of total: %d", currentTaskPartitions, totalPartitions)));
+            errorHandler.accept(
+                    new SpannerConnectorException(
+                            String.format(
+                                    "Task is overloaded by assignments: %d of total: %d",
+                                    currentTaskPartitions, totalPartitions)));
         }
     }
 
@@ -156,18 +165,21 @@ public class TaskStateChangeEventHandler {
         TaskSyncContext taskSyncContext;
 
         try {
-            taskSyncContext = taskSyncContextHolder.updateAndGet(context -> {
-                TaskSyncContext newContext = context;
-                for (Operation operation : operations) {
-                    newContext = operation.doOperation(newContext);
-                    if (operation.isRequiredPublishSyncEvent()) {
-                        LOGGER.debug("Task {} - need to publish sync event for operation {}",
-                                taskSyncContextHolder.get().getTaskUid(), operation.getClass().getSimpleName());
-                        publishTaskSyncEvent.set(true);
-                    }
-                }
-                return newContext;
-            });
+            taskSyncContext = taskSyncContextHolder.updateAndGet(
+                    context -> {
+                        TaskSyncContext newContext = context;
+                        for (Operation operation : operations) {
+                            newContext = operation.doOperation(newContext);
+                            if (operation.isRequiredPublishSyncEvent()) {
+                                LOGGER.debug(
+                                        "Task {} - need to publish sync event for operation {}",
+                                        taskSyncContextHolder.get().getTaskUid(),
+                                        operation.getClass().getSimpleName());
+                                publishTaskSyncEvent.set(true);
+                            }
+                        }
+                        return newContext;
+                    });
         }
         finally {
             taskSyncContextHolder.unlock();
@@ -180,5 +192,4 @@ public class TaskStateChangeEventHandler {
 
         return taskSyncContext;
     }
-
 }

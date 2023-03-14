@@ -8,6 +8,7 @@ package io.debezium.connector.spanner;
 import io.debezium.connector.spanner.context.offset.SpannerOffsetContext;
 import io.debezium.connector.spanner.context.offset.SpannerOffsetContextFactory;
 import io.debezium.connector.spanner.context.source.SourceInfoFactory;
+import io.debezium.connector.spanner.db.DaoFactory;
 import io.debezium.connector.spanner.db.metadata.SchemaRegistry;
 import io.debezium.connector.spanner.db.stream.ChangeStream;
 import io.debezium.connector.spanner.metrics.SpannerMeter;
@@ -18,11 +19,9 @@ import io.debezium.pipeline.source.spi.SnapshotChangeEventSource;
 import io.debezium.pipeline.source.spi.SnapshotProgressListener;
 import io.debezium.pipeline.spi.SnapshotResult;
 
-/**
- * Creates SpannerStreamingChangeEventSource
- * and SnapshotChangeEventSource
- */
-public class SpannerChangeEventSourceFactory implements ChangeEventSourceFactory<SpannerPartition, SpannerOffsetContext> {
+/** Creates SpannerStreamingChangeEventSource and SnapshotChangeEventSource */
+public class SpannerChangeEventSourceFactory
+        implements ChangeEventSourceFactory<SpannerPartition, SpannerOffsetContext> {
 
     private final SpannerConnectorConfig connectorConfig;
     private final SpannerEventDispatcher dispatcher;
@@ -38,14 +37,18 @@ public class SpannerChangeEventSourceFactory implements ChangeEventSourceFactory
 
     private final PartitionManager partitionManager;
 
-    public SpannerChangeEventSourceFactory(SpannerConnectorConfig connectorConfig,
+    private final DaoFactory daoFactory;
+
+    public SpannerChangeEventSourceFactory(
+                                           SpannerConnectorConfig connectorConfig,
                                            SpannerEventDispatcher dispatcher,
                                            ErrorHandler errorHandler,
                                            SchemaRegistry schemaRegistry,
                                            SpannerMeter spannerMeter,
                                            ChangeStream changeStream,
                                            SourceInfoFactory sourceInfoFactory,
-                                           PartitionManager partitionManager) {
+                                           PartitionManager partitionManager,
+                                           DaoFactory daoFactory) {
         this.connectorConfig = connectorConfig;
         this.dispatcher = dispatcher;
         this.errorHandler = errorHandler;
@@ -54,6 +57,7 @@ public class SpannerChangeEventSourceFactory implements ChangeEventSourceFactory
         this.changeStream = changeStream;
         this.sourceInfoFactory = sourceInfoFactory;
         this.partitionManager = partitionManager;
+        this.daoFactory = daoFactory;
     }
 
     @Override
@@ -64,11 +68,13 @@ public class SpannerChangeEventSourceFactory implements ChangeEventSourceFactory
     @Override
     public SpannerStreamingChangeEventSource getStreamingChangeEventSource() {
 
-        StreamEventQueue streamEventQueue = new StreamEventQueue(connectorConfig.queueCapacity(), spannerMeter.getMetricsEventPublisher());
+        StreamEventQueue streamEventQueue = new StreamEventQueue(
+                connectorConfig.queueCapacity(), spannerMeter.getMetricsEventPublisher());
 
         SpannerOffsetContextFactory offsetContextFactory = new SpannerOffsetContextFactory(sourceInfoFactory);
 
-        return new SpannerStreamingChangeEventSource(errorHandler,
+        return new SpannerStreamingChangeEventSource(
+                errorHandler,
                 changeStream,
                 streamEventQueue,
                 spannerMeter.getMetricsEventPublisher(),
@@ -76,6 +82,7 @@ public class SpannerChangeEventSourceFactory implements ChangeEventSourceFactory
                 schemaRegistry,
                 dispatcher,
                 connectorConfig.isFinishingPartitionAfterCommit(),
-                offsetContextFactory);
+                offsetContextFactory,
+                daoFactory);
     }
 }

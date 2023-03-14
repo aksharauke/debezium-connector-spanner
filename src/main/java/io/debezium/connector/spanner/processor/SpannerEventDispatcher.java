@@ -8,6 +8,7 @@ package io.debezium.connector.spanner.processor;
 import static org.slf4j.LoggerFactory.getLogger;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -22,8 +23,10 @@ import io.debezium.connector.base.ChangeEventQueue;
 import io.debezium.connector.spanner.SpannerConnectorConfig;
 import io.debezium.connector.spanner.SpannerPartition;
 import io.debezium.connector.spanner.context.source.SourceInfoFactory;
+import io.debezium.connector.spanner.db.DaoFactory;
 import io.debezium.connector.spanner.db.metadata.SchemaRegistry;
 import io.debezium.connector.spanner.db.metadata.TableId;
+import io.debezium.connector.spanner.db.model.event.BufferedPayload;
 import io.debezium.connector.spanner.exception.SpannerConnectorException;
 import io.debezium.connector.spanner.kafka.KafkaPartitionInfoProvider;
 import io.debezium.data.Envelope;
@@ -38,9 +41,7 @@ import io.debezium.schema.DatabaseSchema;
 import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.spi.topic.TopicNamingStrategy;
 
-/**
- * Spanner dispatcher for data change and schema change events.
- */
+/** Spanner dispatcher for data change and schema change events. */
 public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, TableId> {
 
     private static final Logger LOGGER = getLogger(SpannerEventDispatcher.class);
@@ -56,7 +57,10 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
 
     private final KafkaPartitionInfoProvider kafkaPartitionInfoProvider;
 
-    public SpannerEventDispatcher(SpannerConnectorConfig connectorConfig,
+    private final DaoFactory daoFactory;
+
+    public SpannerEventDispatcher(
+                                  SpannerConnectorConfig connectorConfig,
                                   TopicNamingStrategy<TableId> topicNamingStrategy,
                                   DatabaseSchema<TableId> schema,
                                   ChangeEventQueue<DataChangeEvent> queue,
@@ -67,9 +71,18 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
                                   SchemaNameAdjuster schemaNameAdjuster,
                                   SchemaRegistry schemaRegistry,
                                   SourceInfoFactory sourceInfoFactory,
-                                  KafkaPartitionInfoProvider kafkaPartitionInfoProvider) {
-        super(connectorConfig, topicNamingStrategy, schema, queue, filter, changeEventCreator, metadataProvider,
-                heartbeatFactory.createHeartbeat(), schemaNameAdjuster);
+                                  KafkaPartitionInfoProvider kafkaPartitionInfoProvider,
+                                  DaoFactory daoFactory) {
+        super(
+                connectorConfig,
+                topicNamingStrategy,
+                schema,
+                queue,
+                filter,
+                changeEventCreator,
+                metadataProvider,
+                heartbeatFactory.createHeartbeat(),
+                schemaNameAdjuster);
         this.connectorConfig = connectorConfig;
         this.queue = queue;
         this.topicNamingStrategy = topicNamingStrategy;
@@ -77,27 +90,61 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
         this.schema = schema;
         this.sourceInfoFactory = sourceInfoFactory;
         this.kafkaPartitionInfoProvider = kafkaPartitionInfoProvider;
+        this.daoFactory = daoFactory;
     }
 
-    public boolean publishLowWatermarkStampEvent() {
+    public boolean publishLowWatermarkStampEvent(String taskId) {
 
         try {
-            for (TableId tableId : schemaRegistry.getAllTables()) {
 
-                String topicName = topicNamingStrategy.dataChangeTopic(tableId);
+            // List<BufferedPayload> response = this.daoFactory.getUCSDao().getNext(taskId);
+            List<BufferedPayload> response = this.daoFactory.getPartitionMetadataDao().getNext(taskId);
 
-                DataCollectionSchema dataCollectionSchema = schema.schemaFor(tableId);
+            // publish to Kafka
+            if (response != null) {
+                int singlePart = kafkaPartitionInfoProvider.getPartitions("ucs", Optional.of(1)).iterator().next();
 
-                Struct sourceStruct = sourceInfoFactory.getSourceInfoForLowWatermarkStamp(tableId).struct();
+                for (BufferedPayload data : response) {
 
-                int numPartitions = connectorConfig.getTopicNumPartitions();
-                for (int partition : kafkaPartitionInfoProvider.getPartitions(topicName, Optional.of(numPartitions))) {
-                    SourceRecord sourceRecord = emitSourceRecord(topicName, dataCollectionSchema, partition, sourceStruct);
-                    LOGGER.debug("Build low watermark stamp record {} ", sourceRecord);
+                    Struct sourceStruct = null;
+                    DataCollectionSchema dataCollectionSchema = null;
+                    for (TableId tableId : schemaRegistry.getAllTables()) {
+
+                        dataCollectionSchema = schema.schemaFor(tableId);
+
+                        sourceStruct = sourceInfoFactory
+                                .getSourceInfoForBufferredPayload(tableId, data.toString())
+                                .struct();
+
+                        break;
+                    }
+                    SourceRecord sourceRecord = emitSourceRecord("ucs", dataCollectionSchema, singlePart, sourceStruct);
 
                     queue.enqueue(new DataChangeEvent(sourceRecord));
                 }
             }
+            // this.daoFactory.getUCSDao().purgeProcessedData(taskId);
+            this.daoFactory.getPartitionMetadataDao().purgeProcessedData(taskId);
+
+            // regular processing
+            /*
+             * for (TableId tableId : schemaRegistry.getAllTables()) {
+             *
+             * String topicName = topicNamingStrategy.dataChangeTopic(tableId);
+             *
+             * DataCollectionSchema dataCollectionSchema = schema.schemaFor(tableId);
+             *
+             * Struct sourceStruct = sourceInfoFactory.getSourceInfoForLowWatermarkStamp(tableId).struct();
+             *
+             * int numPartitions = connectorConfig.getTopicNumPartitions();
+             * for (int partition : kafkaPartitionInfoProvider.getPartitions(topicName, Optional.of(numPartitions))) {
+             * SourceRecord sourceRecord = emitSourceRecord(topicName, dataCollectionSchema, partition, sourceStruct);
+             * LOGGER.debug("Build low watermark stamp record {} ", sourceRecord);
+             *
+             * queue.enqueue(new DataChangeEvent(sourceRecord));
+             * }
+             * }
+             */
 
             return true;
 
@@ -107,8 +154,8 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
             return false;
         }
         catch (Exception ex) {
-            if (CommonConnectorConfig.EventProcessingFailureHandlingMode.FAIL
-                    .equals(connectorConfig.getEventProcessingFailureHandlingMode())) {
+            if (CommonConnectorConfig.EventProcessingFailureHandlingMode.FAIL.equals(
+                    connectorConfig.getEventProcessingFailureHandlingMode())) {
                 throw new SpannerConnectorException("Error while publishing watermark stamp", ex);
             }
             LOGGER.warn("Error while publishing watermark stamp");
@@ -118,12 +165,16 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
     }
 
     @VisibleForTesting
-    SourceRecord emitSourceRecord(String topicName, DataCollectionSchema dataCollectionSchema,
-                                  int partition, Struct sourceStruct) {
+    SourceRecord emitSourceRecord(
+                                  String topicName,
+                                  DataCollectionSchema dataCollectionSchema,
+                                  int partition,
+                                  Struct sourceStruct) {
 
         Struct envelope = buildMessage(dataCollectionSchema.getEnvelopeSchema(), sourceStruct);
 
-        return new SourceRecord(null,
+        return new SourceRecord(
+                null,
                 null,
                 topicName,
                 partition,
@@ -151,5 +202,4 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
     @Override
     public void close() {
     }
-
 }

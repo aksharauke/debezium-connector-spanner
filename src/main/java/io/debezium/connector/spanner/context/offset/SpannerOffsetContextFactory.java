@@ -21,7 +21,9 @@ public class SpannerOffsetContextFactory {
         this.transactionContext = new TransactionContext();
     }
 
-    public SpannerOffsetContext getOffsetContextFromDataChangeEvent(int modNumber, DataChangeEvent dataChangeEvent) throws InterruptedException {
+    public SpannerOffsetContext getOffsetContextFromDataChangeEvent(
+                                                                    int modNumber, DataChangeEvent dataChangeEvent)
+            throws InterruptedException {
         SourceInfo sourceInfo = sourceInfoFactory.getSourceInfo(modNumber, dataChangeEvent);
         PartitionOffset partitionOffset = new PartitionOffset(dataChangeEvent.getCommitTimestamp(), dataChangeEvent.getMetadata());
         return new SpannerOffsetContext(sourceInfo, partitionOffset, transactionContext);
@@ -30,5 +32,10 @@ public class SpannerOffsetContextFactory {
     public SpannerOffsetContext getOffsetContextFromHeartbeatEvent(HeartbeatEvent heartbeatEvent) {
         PartitionOffset partitionOffset = new PartitionOffset(heartbeatEvent.getRecordTimestamp(), heartbeatEvent.getMetadata());
         return new SpannerOffsetContext(partitionOffset, transactionContext);
+    }
+
+    public SourceInfo getSourceInfoForWatermark(DataChangeEvent dataChangeEvent)
+            throws InterruptedException {
+        return sourceInfoFactory.getSourceInfo(1, dataChangeEvent);
     }
 }

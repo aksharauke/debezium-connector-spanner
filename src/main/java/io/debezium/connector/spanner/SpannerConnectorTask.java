@@ -158,7 +158,8 @@ public class SpannerConnectorTask extends SpannerBaseSourceTask {
                 schemaNameAdjuster,
                 schemaRegistry,
                 sourceInfoFactory,
-                kafkaPartitionInfoProvider);
+                kafkaPartitionInfoProvider,
+                daoFactory);
 
         this.synchronizationTaskContext = new SynchronizationTaskContext(
                 this,
@@ -171,7 +172,8 @@ public class SpannerConnectorTask extends SpannerBaseSourceTask {
                 schemaRegistry,
                 this::finish,
                 spannerMeter.getMetricsEventPublisher(),
-                lowWatermarkHolder);
+                lowWatermarkHolder,
+                daoFactory);
 
         final SpannerChangeEventSourceFactory changeEventSourceFactory = new SpannerChangeEventSourceFactory(
                 connectorConfig,
@@ -181,7 +183,8 @@ public class SpannerConnectorTask extends SpannerBaseSourceTask {
                 spannerMeter,
                 changeStream,
                 sourceInfoFactory,
-                partitionManager);
+                partitionManager,
+                daoFactory);
 
         this.coordinator = new SpannerChangeEventSourceCoordinator(
                 getInitialOffsets(),
