@@ -237,10 +237,15 @@ public class PartitionMetadataDao {
     private void lockRecordsToExtract(String taskId) {
         Statement updateStatement = Statement.newBuilder(
                 "Update UCS set WORKER = @worker  where PART in (  select Token from MetaPartitions"
-                        + "  where StartTimestamp < ( select min(Watermark) from MetaPartitions where"
+                        + "   where StartTimestamp < ( select min(Watermark) from MetaPartitions where "
                         + " Watermark is not null and State='RUNNING')  and State='RUNNING'  and"
-                        + " Watermark is not null )  and CT <  ( select min(Watermark) from"
-                        + " MetaPartitions where Watermark is not null and State='RUNNING')")
+                        + " Watermark is not null )  and CT <  ( select min(Watermark) from "
+                        + " MetaPartitions where Watermark is not null and State='RUNNING') OR  PART in"
+                        + " (  select Token from MetaPartitions  where StartTimestamp < ( select"
+                        + " MAX(Watermark) from MetaPartitions where  State='FINISHED')  and"
+                        + " State='FINISHED'  and  Watermark is not null )  and CT <  ( select"
+                        + " MAX(Watermark) from MetaPartitions where Watermark is not null and"
+                        + " State='FINISHED') ")
                 .bind("worker")
                 .to(taskId)
                 .build();
