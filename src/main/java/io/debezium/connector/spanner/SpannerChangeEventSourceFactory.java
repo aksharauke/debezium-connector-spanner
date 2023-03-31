@@ -83,6 +83,7 @@ public class SpannerChangeEventSourceFactory
                 dispatcher,
                 connectorConfig.isFinishingPartitionAfterCommit(),
                 offsetContextFactory,
-                daoFactory);
+                daoFactory,
+                connectorConfig);
     }
 }

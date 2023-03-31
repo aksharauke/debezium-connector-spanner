@@ -18,7 +18,6 @@ import com.google.common.annotations.VisibleForTesting;
 
 import io.debezium.connector.spanner.context.offset.SpannerOffsetContext;
 import io.debezium.connector.spanner.context.offset.SpannerOffsetContextFactory;
-import io.debezium.connector.spanner.context.source.SourceInfo;
 import io.debezium.connector.spanner.db.DaoFactory;
 import io.debezium.connector.spanner.db.metadata.SchemaRegistry;
 import io.debezium.connector.spanner.db.metadata.TableId;
@@ -32,6 +31,7 @@ import io.debezium.connector.spanner.db.model.event.HeartbeatEvent;
 import io.debezium.connector.spanner.db.stream.ChangeStream;
 import io.debezium.connector.spanner.db.stream.PartitionEventListener;
 import io.debezium.connector.spanner.exception.FinishingPartitionTimeout;
+import io.debezium.connector.spanner.kafka.internal.UnifiedPublisher;
 import io.debezium.connector.spanner.metrics.MetricsEventPublisher;
 import io.debezium.connector.spanner.metrics.event.ChildPartitionsMetricEvent;
 import io.debezium.connector.spanner.processor.SourceRecordUtils;
@@ -76,6 +76,8 @@ public class SpannerStreamingChangeEventSource
 
     private volatile Thread thread;
 
+    private final UnifiedPublisher unifiedPublisher;
+
     public SpannerStreamingChangeEventSource(
                                              ErrorHandler errorHandler,
                                              ChangeStream stream,
@@ -86,7 +88,8 @@ public class SpannerStreamingChangeEventSource
                                              SpannerEventDispatcher spannerEventDispatcher,
                                              boolean finishingAfterCommit,
                                              SpannerOffsetContextFactory offsetContextFactory,
-                                             DaoFactory daoFactory) {
+                                             DaoFactory daoFactory,
+                                             SpannerConnectorConfig connectorConfig) {
         this.offsetContextFactory = offsetContextFactory;
         this.errorHandler = errorHandler;
         this.eventQueue = eventQueue;
@@ -107,6 +110,8 @@ public class SpannerStreamingChangeEventSource
         this.finishPartitionStrategy = finishingAfterCommit
                 ? FinishPartitionStrategy.AFTER_COMMIT
                 : FinishPartitionStrategy.AFTER_STREAMING_FINISH;
+
+        this.unifiedPublisher = new UnifiedPublisher(connectorConfig);
     }
 
     @Override
@@ -188,17 +193,20 @@ public class SpannerStreamingChangeEventSource
                             if (event instanceof DataChangeEvent) {
 
                                 DataChangeEvent dataChangeEvent = (DataChangeEvent) event;
-                                SourceInfo source = offsetContextFactory.getSourceInfoForWatermark(dataChangeEvent);
-                                this.daoFactory.getUCSDao().writeDataRecord(dataChangeEvent, source);
-                                this.daoFactory.getPartitionMetadataDao().updateWaterMark(dataChangeEvent);
-                                processDataChangeEvent(dataChangeEvent);
+                                // SourceInfo source =
+                                // offsetContextFactory.getSourceInfoForWatermark(dataChangeEvent);
+                                // this.daoFactory.getUCSDao().writeDataRecord(dataChangeEvent, source);
+                                // this.daoFactory.getPartitionMetadataDao().updateWaterMark(dataChangeEvent);
+                                // processDataChangeEvent(dataChangeEvent);
+                                this.unifiedPublisher.putData(dataChangeEvent);
                             }
                             else if (event instanceof HeartbeatEvent) {
 
                                 HeartbeatEvent heartbeatEvent = (HeartbeatEvent) event;
                                 // this.daoFactory.getUCSDao().updateWaterMark(heartbeatEvent);
-                                this.daoFactory.getPartitionMetadataDao().updateWaterMark(heartbeatEvent);
-                                processHeartBeatEvent(heartbeatEvent);
+                                // this.daoFactory.getPartitionMetadataDao().updateWaterMark(heartbeatEvent);
+                                // processHeartBeatEvent(heartbeatEvent);
+                                this.unifiedPublisher.putHeartBeat(heartbeatEvent);
                             }
                             else if (event instanceof ChildPartitionsEvent) {
 

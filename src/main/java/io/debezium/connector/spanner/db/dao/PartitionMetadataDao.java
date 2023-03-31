@@ -167,7 +167,7 @@ public class PartitionMetadataDao {
                         });
     }
 
-    private boolean canWork(String taskId) {
+    public boolean canWork(String taskId) {
 
         if (isLockedByWorker(taskId))
             return true;

@@ -52,20 +52,24 @@ public class PartitionStatusUpdateOperation implements Operation {
                             if (partitionState.getToken().equals(token)) {
                                 if (PartitionStateEnum.FINISHED.equals(partitionStateEnum)) {
                                     // mark the partition as finished in the metadata table
-                                    this.daoFactory
-                                            .getPartitionMetadataDao()
-                                            .updateStateToFinshed(partitionState);
+                                    /*
+                                     * this.daoFactory
+                                     * .getPartitionMetadataDao()
+                                     * .updateStateToFinshed(partitionState);
+                                     */
                                     return partitionState.toBuilder()
                                             .state(partitionStateEnum)
                                             .finishedTimestamp(Timestamp.now())
                                             .build();
                                 }
                                 // update entry in metadata table for running partition
-                                if (PartitionStateEnum.RUNNING.equals(partitionStateEnum)) {
-                                    this.daoFactory
-                                            .getPartitionMetadataDao()
-                                            .writeRunningPartition(partitionState);
-                                }
+                                /*
+                                 * if (PartitionStateEnum.RUNNING.equals(partitionStateEnum)) {
+                                 * this.daoFactory
+                                 * .getPartitionMetadataDao()
+                                 * .writeRunningPartition(partitionState);
+                                 * }
+                                 */
                                 return partitionState.toBuilder().state(partitionStateEnum).build();
                             }
                             return partitionState;

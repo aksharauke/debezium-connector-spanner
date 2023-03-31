@@ -190,7 +190,7 @@ class SpannerEventDispatcherTest {
                         sourceInfoFactory,
                         new KafkaPartitionInfoProvider(null),
                         mock(DaoFactory.class)))
-                        .publishLowWatermarkStampEvent("test"));
+                        .publishLowWatermarkStampEvent("test", null));
 
         verify(topicNamingStrategy).transactionTopic();
         verify(topicNamingStrategy1).heartbeatTopic();
@@ -257,7 +257,7 @@ class SpannerEventDispatcherTest {
                 .when(spannerEventDispatcher)
                 .emitSourceRecord(anyString(), any(), anyInt(), any());
 
-        spannerEventDispatcher.publishLowWatermarkStampEvent("test");
+        spannerEventDispatcher.publishLowWatermarkStampEvent("test", null);
         spannerEventDispatcher.destroy();
         spannerEventDispatcher.close();
 

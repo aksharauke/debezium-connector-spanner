@@ -22,9 +22,7 @@ import com.google.common.annotations.VisibleForTesting;
 
 import io.debezium.connector.spanner.SpannerConnectorConfig;
 
-/**
- * Factory for {@code DatabaseClient}
- */
+/** Factory for {@code DatabaseClient} */
 public class DatabaseClientFactory {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DatabaseClientFactory.class);
@@ -36,9 +34,15 @@ public class DatabaseClientFactory {
     private final SpannerOptions options;
 
     private DatabaseClient databaseClient;
+    private DatabaseClient stagingClient;
 
-    public DatabaseClientFactory(String projectId, String instanceId, String databaseId, String credentialsJson,
-                                 String credentialsPath, String host) {
+    public DatabaseClientFactory(
+                                 String projectId,
+                                 String instanceId,
+                                 String databaseId,
+                                 String credentialsJson,
+                                 String credentialsPath,
+                                 String host) {
         this.projectId = projectId;
         this.instanceId = instanceId;
         this.databaseId = databaseId;
@@ -58,8 +62,13 @@ public class DatabaseClientFactory {
     }
 
     public DatabaseClientFactory(SpannerConnectorConfig config) {
-        this(config.projectId(), config.instanceId(), config.databaseId(),
-                config.gcpSpannerCredentialsJson(), config.gcpSpannerCredentialsPath(), config.spannerHost());
+        this(
+                config.projectId(),
+                config.instanceId(),
+                config.databaseId(),
+                config.gcpSpannerCredentialsJson(),
+                config.gcpSpannerCredentialsPath(),
+                config.spannerHost());
     }
 
     @VisibleForTesting
@@ -90,8 +99,19 @@ public class DatabaseClientFactory {
         if (databaseClient != null) {
             return databaseClient;
         }
-        databaseClient = options.getService().getDatabaseClient(
-                DatabaseId.of(this.projectId, this.instanceId, this.databaseId));
+        databaseClient = options
+                .getService()
+                .getDatabaseClient(DatabaseId.of(this.projectId, this.instanceId, this.databaseId));
         return databaseClient;
+    }
+
+    public DatabaseClient getStagingDbClient() {
+        if (stagingClient != null) {
+            return stagingClient;
+        }
+        stagingClient = options
+                .getService()
+                .getDatabaseClient(DatabaseId.of(this.projectId, "aks-memo-inst", "test1"));
+        return stagingClient;
     }
 }

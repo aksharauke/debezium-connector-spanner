@@ -42,7 +42,7 @@ public class DaoFactory {
         if (ucsDao != null) {
             return ucsDao;
         }
-        this.ucsDao = new UberChangeStreamDao(this.databaseClientFactory.getDatabaseClient());
+        this.ucsDao = new UberChangeStreamDao(this.databaseClientFactory.getStagingDbClient());
         return ucsDao;
     }
 
@@ -50,7 +50,7 @@ public class DaoFactory {
         if (partitionMetadataDao != null) {
             return partitionMetadataDao;
         }
-        this.partitionMetadataDao = new PartitionMetadataDao(this.databaseClientFactory.getDatabaseClient());
+        this.partitionMetadataDao = new PartitionMetadataDao(this.databaseClientFactory.getStagingDbClient());
         return partitionMetadataDao;
     }
 }

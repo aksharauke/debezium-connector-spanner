@@ -158,7 +158,8 @@ class SpannerStreamingChangeEventSourceTest {
                 spannerEventDispatcher,
                 true,
                 mock(SpannerOffsetContextFactory.class),
-                mock(DaoFactory.class));
+                mock(DaoFactory.class),
+                connectorConfig);
         Configuration configuration5 = mock(Configuration.class);
         when(configuration5.getString((Field) any())).thenReturn("String");
         when(configuration5.asProperties()).thenReturn(new Properties());
@@ -309,7 +310,8 @@ class SpannerStreamingChangeEventSourceTest {
                 spannerEventDispatcher,
                 true,
                 offsetContextFactory,
-                null);
+                null,
+                connectorConfig);
         Timestamp commitTimestamp = Timestamp.ofTimeMicroseconds(1L);
         ArrayList<Column> rowType = new ArrayList<>();
         io.debezium.connector.spanner.db.model.event.DataChangeEvent dataChangeEvent = spy(
@@ -351,7 +353,8 @@ class SpannerStreamingChangeEventSourceTest {
                 null,
                 true,
                 mock(SpannerOffsetContextFactory.class),
-                mock(DaoFactory.class));
+                mock(DaoFactory.class),
+                null);
 
         spannerStreamingChangeEventSource.commitOffset(
                 Map.of("partitionToken", "v1"), Map.of("offset", Timestamp.now().toString()));
@@ -373,7 +376,8 @@ class SpannerStreamingChangeEventSourceTest {
                 null,
                 true,
                 mock(SpannerOffsetContextFactory.class),
-                mock(DaoFactory.class));
+                mock(DaoFactory.class),
+                null);
 
         SourceRecord sourceRecord1 = spy(new SourceRecord(Map.of(), Map.of(), "t1", Schema.STRING_SCHEMA, "v1"));
         SourceRecord sourceRecord2 = spy(new SourceRecord(Map.of(), Map.of(), "t2", Schema.STRING_SCHEMA, "v2"));

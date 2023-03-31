@@ -74,42 +74,47 @@ public class UberChangeStreamDao {
         // all records of the same partition_token
         // will always be in order hence no need
         // to check where wm < commitTs
-        Statement updateStatement = Statement.newBuilder("UPDATE UCS " + "SET WM = @waterM " + "WHERE PART = @part")
-                .bind("waterM")
-                .to(commitTs)
-                .bind("part")
-                .to(part)
-                .build();
-
-        this.databaseClient
-                .readWriteTransaction()
-                .run(
-                        transaction -> {
-                            transaction.executeUpdate(updateStatement);
-                            return null;
-                        });
+        /*
+         * Statement updateStatement = Statement.newBuilder("UPDATE UCS " + "SET WM = @waterM " + "WHERE PART = @part")
+         * .bind("waterM")
+         * .to(commitTs)
+         * .bind("part")
+         * .to(part)
+         * .build();
+         *
+         * this.databaseClient
+         * .readWriteTransaction()
+         * .run(
+         * transaction -> {
+         * transaction.executeUpdate(updateStatement);
+         * return null;
+         * });
+         */
     }
 
     public void updateWaterMark(HeartbeatEvent hearbeat) {
 
-        Instant commitInstant = hearbeat.getTimestamp().toSqlTimestamp().toInstant();
-        long commitTs = ChronoUnit.MICROS.between(Instant.EPOCH, commitInstant);
-
-        String part = hearbeat.getMetadata().getPartitionToken();
-        Statement updateStatement = Statement.newBuilder("UPDATE UCS " + "SET WM = @waterM " + "WHERE PART = @part")
-                .bind("waterM")
-                .to(commitTs)
-                .bind("part")
-                .to(part)
-                .build();
-
-        this.databaseClient
-                .readWriteTransaction()
-                .run(
-                        transaction -> {
-                            transaction.executeUpdate(updateStatement);
-                            return null;
-                        });
+        /*
+         * Instant commitInstant = hearbeat.getTimestamp().toSqlTimestamp().toInstant();
+         * long commitTs = ChronoUnit.MICROS.between(Instant.EPOCH, commitInstant);
+         *
+         * String part = hearbeat.getMetadata().getPartitionToken();
+         * Statement updateStatement =
+         * Statement.newBuilder("UPDATE UCS " + "SET WM = @waterM " + "WHERE PART = @part")
+         * .bind("waterM")
+         * .to(commitTs)
+         * .bind("part")
+         * .to(part)
+         * .build();
+         *
+         * this.databaseClient
+         * .readWriteTransaction()
+         * .run(
+         * transaction -> {
+         * transaction.executeUpdate(updateStatement);
+         * return null;
+         * });
+         */
     }
 
     private boolean canWork(String taskId) {

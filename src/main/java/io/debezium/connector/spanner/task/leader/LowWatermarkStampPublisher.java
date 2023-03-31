@@ -88,7 +88,7 @@ public class LowWatermarkStampPublisher {
         while (this.publisherThread != null) {
         }
 
-        spannerEventDispatcher.publishLowWatermarkStampEvent(this.taskUid);
+        spannerEventDispatcher.publishLowWatermarkStampEvent(this.taskUid, taskSyncContextHolder.get());
     }
 
     private Thread createPublisherThread() {
@@ -102,7 +102,8 @@ public class LowWatermarkStampPublisher {
                         while (!Thread.currentThread().isInterrupted()) {
                             try {
                                 if (!suspendFlag.get()) {
-                                    spannerEventDispatcher.publishLowWatermarkStampEvent(this.taskUid);
+                                    spannerEventDispatcher.publishLowWatermarkStampEvent(
+                                            this.taskUid, taskSyncContextHolder.get());
                                 }
 
                                 Thread.sleep(publishInterval.toMillis());
