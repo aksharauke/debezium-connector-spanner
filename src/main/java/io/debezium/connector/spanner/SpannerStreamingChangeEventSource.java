@@ -138,6 +138,7 @@ public class SpannerStreamingChangeEventSource
 
                         @Override
                         public void onFinish(Partition partition) {
+
                             LOGGER.info("Partition onFinish: {}", partition.getToken());
                         }
 
@@ -218,6 +219,10 @@ public class SpannerStreamingChangeEventSource
                                 LOGGER.info(
                                         "Received FinishPartitionEvent for partition {}",
                                         event.getMetadata().getPartitionToken());
+                                if (event.getMetadata().getPartitionToken() != "Parent0")
+                                    this.unifiedPublisher.putFinishedPartition(
+                                            event.getMetadata().getPartitionToken());
+
                                 if (finishPartitionStrategy.equals(FinishPartitionStrategy.AFTER_COMMIT)) {
                                     this.finishingPartitionManager.onPartitionFinishEvent(
                                             event.getMetadata().getPartitionToken());

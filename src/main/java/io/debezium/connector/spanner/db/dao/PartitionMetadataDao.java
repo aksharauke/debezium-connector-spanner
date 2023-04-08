@@ -173,7 +173,7 @@ public class PartitionMetadataDao {
             return true;
 
         // We are here since the table is empty
-        Statement insertStatement = Statement.newBuilder("INSERT INTO PARTITIONLOCK  (WORKER) VALUES ( '" + taskId + "')")
+        Statement insertStatement = Statement.newBuilder("INSERT INTO PARTITIONLOCK  (WORKER ) VALUES ( '" + taskId + "' )")
                 .bind("worker")
                 .to(taskId)
                 .build();
@@ -197,7 +197,7 @@ public class PartitionMetadataDao {
 
     private boolean isLockedByWorker(String taskId) {
 
-        Statement selectExistStatement = Statement.newBuilder(" SELECT WORKER " + " FROM PARTITIONLOCK  ").build();
+        Statement selectExistStatement = Statement.newBuilder(" SELECT WORKER  " + " FROM PARTITIONLOCK  ").build();
 
         final ResultSet resultSetExist = this.databaseClient
                 .singleUse() // Execute a single read or query against Cloud Spanner.
@@ -209,6 +209,53 @@ public class PartitionMetadataDao {
         else {
             return false; // table is empty
         }
+    }
+
+    public long getLastWaterMark(String taskId) {
+        Statement selectExistStatement = Statement.newBuilder(" SELECT WATERMARK  FROM WM WHERE WORKER = @worker ")
+                .bind("worker")
+                .to(taskId)
+                .build();
+
+        final ResultSet resultSetExist = this.databaseClient
+                .singleUse() // Execute a single read or query against Cloud Spanner.
+                .executeQuery(selectExistStatement);
+
+        if (resultSetExist.next()) {
+            return resultSetExist.getLong(0);
+        }
+        else {
+            // table is empty, insert the WM
+            insertWatermarkForWorker(taskId);
+            return 0l; // table is empty
+        }
+    }
+
+    public void insertWatermarkForWorker(String taskId) {
+
+        // first write
+        List<Mutation> mutations = new ArrayList<>();
+        mutations.add(
+                Mutation.newInsertBuilder("WM").set("WORKER").to(taskId).set("WATERMARK").to(0l).build());
+
+        this.databaseClient.write(mutations);
+    }
+
+    public void updateLastWatermark(String taskId, long watermark) {
+        Statement updateStatement = Statement.newBuilder("UPDATE WM SET WATERMARK = @waterM WHERE WORKER = @worker")
+                .bind("waterM")
+                .to(watermark)
+                .bind("worker")
+                .to(taskId)
+                .build();
+
+        this.databaseClient
+                .readWriteTransaction()
+                .run(
+                        transaction -> {
+                            transaction.executeUpdate(updateStatement);
+                            return null;
+                        });
     }
 
     // checks if there are partitons that have not yet seen data

@@ -8,6 +8,7 @@ package io.debezium.connector.spanner.processor;
 import static org.slf4j.LoggerFactory.getLogger;
 
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -21,7 +22,12 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import org.apache.commons.dbcp2.BasicDataSource;
+import org.apache.commons.dbcp2.ConnectionFactory;
+import org.apache.commons.dbcp2.DriverManagerConnectionFactory;
+import org.apache.commons.dbcp2.PoolableConnectionFactory;
+import org.apache.commons.dbcp2.PoolingDriver;
+import org.apache.commons.pool2.ObjectPool;
+import org.apache.commons.pool2.impl.GenericObjectPool;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
@@ -41,6 +47,7 @@ import io.debezium.connector.spanner.exception.SpannerConnectorException;
 import io.debezium.connector.spanner.kafka.KafkaPartitionInfoProvider;
 import io.debezium.connector.spanner.kafka.internal.UnifiedConsumer;
 import io.debezium.connector.spanner.kafka.internal.UnifiedPublisher;
+import io.debezium.connector.spanner.kafka.internal.model.InterimRecord;
 import io.debezium.connector.spanner.kafka.internal.model.PartitionStateEnum;
 import io.debezium.connector.spanner.task.TaskSyncContext;
 import io.debezium.data.Envelope;
@@ -66,8 +73,17 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
         private String partition;
         private long recSeq;
         private String trx;
+        private boolean isFinishedPartition;
 
-        public Records(String k, String v, long ct, boolean isData, String part, long rec, String trx) {
+        public Records(
+                       String k,
+                       String v,
+                       long ct,
+                       boolean isData,
+                       String part,
+                       long rec,
+                       String trx,
+                       boolean isFinishedPartition) {
             this.key = k;
             this.value = v;
             this.commitTs = ct;
@@ -75,6 +91,7 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
             this.partition = part;
             this.recSeq = rec;
             this.trx = trx;
+            this.isFinishedPartition = isFinishedPartition;
         }
 
         public String getKey() {
@@ -103,6 +120,10 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
 
         public String getTrx() {
             return trx;
+        }
+
+        public boolean isFinishedPartition() {
+            return isFinishedPartition;
         }
     }
 
@@ -133,9 +154,14 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
     private final UnifiedPublisher kafkaProducer;
 
     private final PriorityQueue<Records> minHeap;
+    private PoolingDriver driver = null;
+    private int window = 10;
 
     static final String JDBC_DRIVER = "com.mysql.jdbc.Driver";
-    private BasicDataSource bds = new BasicDataSource();
+    // private BasicDataSource bds = new BasicDataSource();
+
+    private boolean canProcess = false;
+    private boolean firstTimeCheck = true;
 
     public SpannerEventDispatcher(
                                   SpannerConnectorConfig connectorConfig,
@@ -171,50 +197,184 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
         this.daoFactory = daoFactory;
         this.kafkaConsumer = new UnifiedConsumer(connectorConfig);
         this.kafkaProducer = new UnifiedPublisher(connectorConfig);
+        this.window = connectorConfig.getPocWindowSec();
+        LOGGER.error("The window is : " + window);
+
         minHeap = new PriorityQueue<Records>(new RecordComparator());
         try {
             int singlePart = kafkaPartitionInfoProvider.getPartitions("ucs", Optional.of(1)).iterator().next();
             singlePart = kafkaPartitionInfoProvider.getPartitions("ucsb", Optional.of(1)).iterator().next();
+            singlePart = kafkaPartitionInfoProvider.getPartitions("ordout", Optional.of(1)).iterator().next();
+            singlePart = kafkaPartitionInfoProvider.getPartitions("wm", Optional.of(1)).iterator().next();
         }
         catch (Exception ex) {
             LOGGER.warn("Error while creating topics");
         }
 
+        try {
+            Class dirverClass = Class.forName(JDBC_DRIVER);
+        }
+        catch (ClassNotFoundException e) {
+            System.err.println("There was not able to find the driver class");
+        }
+
+        ConnectionFactory driverManagerConnectionFactory = new DriverManagerConnectionFactory(
+                "jdbc:mysql://104.197.203.198:3306/test", "test", "test");
+
+        PoolableConnectionFactory poolfactory = new PoolableConnectionFactory(driverManagerConnectionFactory, null);
+        ObjectPool connectionPool = new GenericObjectPool(poolfactory);
+
+        poolfactory.setPool(connectionPool);
+        try {
+            Class.forName("org.apache.commons.dbcp2.PoolingDriver");
+        }
+        catch (ClassNotFoundException e) {
+            System.err.println("There was not able to find the driver class");
+        }
+        try {
+            driver = (PoolingDriver) DriverManager.getDriver("jdbc:apache:commons:dbcp:");
+        }
+        catch (SQLException e) {
+            System.err.println("There was an error: " + e.getMessage());
+        }
+        driver.registerPool("test-poc", connectionPool);
         // Set database driver name
-        bds.setDriverClassName(JDBC_DRIVER);
-        // Set database url
-        bds.setUrl("jdbc:mysql://localhost:3306/test");
-        // Set database user
-        bds.setUsername("test");
-        // Set database password
-        bds.setPassword("test");
-        // Set the connection pool size
-        bds.setInitialSize(5);
+        /*
+         * bds.setDriverClassName(JDBC_DRIVER);
+         * // Set database url
+         * bds.setUrl("jdbc:mysql://104.197.203.198:3306/test");
+         * // bds.setUrl("jdbc:mysql://localhost:3306/test");
+         * // Set database user
+         * bds.setUsername("test");
+         * // Set database password
+         * bds.setPassword("test");
+         * // Set the connection pool size
+         * bds.setInitialSize(5);
+         */
     }
 
     public boolean publishLowWatermarkStampEvent(String taskId, TaskSyncContext taskSyncContext) {
 
+        Instant start = Instant.now();
         try {
-            if (!this.daoFactory.getPartitionMetadataDao().canWork(taskId)) {
-                // tough luck, someone else locked it
-                return true;
+            if (!canProcess && firstTimeCheck) {
+                firstTimeCheck = false;
+                if (!this.daoFactory.getPartitionMetadataDao().canWork(taskId)) {
+                    // tough luck, someone else locked it
+                    return true;
+                }
+
+                canProcess = true;
+            }
+            else {
+                if (!canProcess) {
+                    return true;
+                }
             }
 
-            Instant thresholdTsInstant = Timestamp.now().toSqlTimestamp().toInstant().minus(1, ChronoUnit.SECONDS);
-            long thresholdTs = ChronoUnit.MICROS.between(Instant.EPOCH, thresholdTsInstant);
+            // TODO: how to clear historically old FINISHED partitions
+            // Give some initial catchup window - current minus 5 mins or so - to catchup - take it as
+            // configuration
 
-            // we can lose a partition if it starts at currentTime and finishes ealier than current time
-            // +1 TODO: handle this
+            // Instant thresholdTsInstant = Timestamp.now().toSqlTimestamp().toInstant().minus(1,
+            // ChronoUnit.SECONDS);
+            // long thresholdTs = ChronoUnit.MICROS.between(Instant.EPOCH, thresholdTsInstant);
+            Instant thresholdTsInstant;
+            long thresholdTs = 0l;
+            // long savedWm = this.daoFactory.getPartitionMetadataDao().getLastWaterMark(taskId);
+            long savedWm = kafkaConsumer.getWatermark();
+            Instant savedThresholdInst;
+            if (savedWm == 0l) // first run would need to start somewhere
+            {
+                thresholdTsInstant = Timestamp.now().toSqlTimestamp().toInstant().minus(1, ChronoUnit.SECONDS);
+                thresholdTs = ChronoUnit.MICROS.between(Instant.EPOCH, thresholdTsInstant);
+                savedThresholdInst = thresholdTsInstant;
+                /*
+                 * savedThresholdInst =
+                 * Timestamp.now()
+                 * .toSqlTimestamp()
+                 * .toInstant()
+                 * .minus(2, ChronoUnit.SECONDS); // lets say this is the lag
+                 */
+
+            }
+            else {
+                savedThresholdInst = Instant.ofEpochMilli(savedWm / 1000);
+
+                thresholdTs = savedWm + (1000000 * window); // 10 sec window default
+                thresholdTsInstant = Instant.ofEpochMilli(thresholdTs / 1000);
+            }
+
+            LOGGER.info(" ### Threshold timestamp: " + thresholdTs);
+            LOGGER.info(" ### The savedTs is : " + savedThresholdInst.toString());
+
+            /*
+             * List<PartitionState> toPrintPart = taskSyncContext.getAllTaskStates().values().stream()
+             * .flatMap(taskState -> taskState.getPartitions().stream())
+             * .filter(
+             * partitionState -> ((partitionState.getState().equals(PartitionStateEnum.FINISHED)
+             * && partitionState.getToken() != "Parent0"
+             * /*
+             * && partitionState
+             * .getFinishedTimestamp()
+             * .toSqlTimestamp()
+             * .toInstant()
+             * .compareTo(savedThresholdInst) // finished after prev window
+             * >= 0
+             * )
+             * || (partitionState.getState().equals(PartitionStateEnum.RUNNING)
+             * && partitionState.getToken() != "Parent0"
+             * && partitionState
+             * .getStartTimestamp()
+             * .toSqlTimestamp()
+             * .toInstant()
+             * .compareTo(thresholdTsInstant) < 0)))
+             * .collect(Collectors.toList());
+             *
+             * for (PartitionState p : toPrintPart) {
+             * LOGGER.info(" ### Partition state to process : " + p.toString());
+             * }
+             */
+
             Set<String> partitionsToProcess = taskSyncContext.getAllTaskStates().values().stream()
                     .flatMap(taskState -> taskState.getPartitions().stream())
                     .filter(
                             partitionState -> ((partitionState.getState().equals(PartitionStateEnum.FINISHED)
+                                    && partitionState.getToken() != "Parent0"
                                     && partitionState
                                             .getFinishedTimestamp()
                                             .toSqlTimestamp()
                                             .toInstant()
-                                            .compareTo(thresholdTsInstant) > 0)
+                                            .compareTo(savedThresholdInst) // finished after prev window
+                                            > 0
+                            /*
+                             * && partitionState
+                             * .getFinishedTimestamp()
+                             * .toSqlTimestamp()
+                             * .toInstant()
+                             * .compareTo(
+                             * thresholdTsInstant) // finished before or at current
+                             * // window
+                             * < 0 commented since records saved in prev window were not
+                             * getting picked up if the partition finish is after the current threshold
+                             */
+                            )
+                                    /*
+                                     * || (partitionState
+                                     * .getState()
+                                     * .equals(
+                                     * PartitionStateEnum
+                                     * .FINISHED) // gather the partitions in this window
+                                     * // runs
+                                     * && partitionState
+                                     * .getFinishedTimestamp()
+                                     * .toSqlTimestamp()
+                                     * .toInstant()
+                                     * .compareTo(thresholdTsInstant)
+                                     * >= 0)
+                                     */
                                     || (partitionState.getState().equals(PartitionStateEnum.RUNNING)
+                                            && partitionState.getToken() != "Parent0"
                                             && partitionState
                                                     .getStartTimestamp()
                                                     .toSqlTimestamp()
@@ -223,44 +383,126 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
                     .map(partitionState -> partitionState.getToken())
                     .collect(Collectors.toSet());
 
-            Set<String> finishedPartitions = new HashSet<>();
+            if (partitionsToProcess.size() == 0) {
+                // this.daoFactory.getPartitionMetadataDao().updateLastWatermark(taskId, thresholdTs);
+                kafkaProducer.putWatermark(Long.toString(thresholdTs));
 
+                return true; // when you ask? During startup
+            }
+
+            Set<String> finishedPartitions = new HashSet<>();
+            LOGGER.info(" ### The number of partitions to query: " + partitionsToProcess.size());
+            long recProcessed = 0l;
+            long recToWriteToKafka = 0l;
+            boolean isRebufferred = false;
+            Set<String> rebufferredTrx = new HashSet<>();
             while (true) {
-                String rec = kafkaConsumer.getRecord();
+                InterimRecord intRec = kafkaConsumer.getRecord();
+                String rec = intRec.getRecord();
                 LOGGER.info(" ### The record from Kafka: " + rec);
 
                 if (rec.equals("")) {
-                    // we have seen all records from Kafka
+                    // we have seen all records from Kafka, but save only when we have all the records
+                    // let us re-read from same offset next time , do not extend the last saved window
 
-                    kafkaConsumer.commitOffsets();
-                    writeToMysql();
-                    break;
+                    if (finishedPartitions.size() != partitionsToProcess.size()) {
+                        // sleep 1 seconds
+                        LOGGER.info(" ### Waiting for records for the window");
+                        Thread.sleep(1000);
+                        continue;
+                    }
+                    else {
+                        writeToKafka();
+                        // this.daoFactory.getPartitionMetadataDao().updateLastWatermark(taskId, thresholdTs);
+                        kafkaProducer.putWatermark(Long.toString(thresholdTs));
+                        kafkaConsumer.commitOffsets();
+                        break;
+                    }
+
                 }
                 else {
-
+                    recProcessed++;
                     Records r = parseRecord(rec);
 
                     if (!partitionsToProcess.contains(r.getPartition())) {
-                        kafkaProducer.saveForLater(rec);
+                        LOGGER.info(" ### Saving record for later unmatched partition ");
+                        long savedOffset = kafkaProducer.saveForLater(rec);
+                        if (intRec.isOriginUcsb()) {
+                            if (!isRebufferred) {
+                                isRebufferred = true;
+                                LOGGER.info(" ### Not gonna enter loop again, done at: " + savedOffset);
+                                kafkaConsumer.pauseAt(
+                                        savedOffset); // we want to stop reading from ucsb in same loop
+                            }
+                        }
                     }
                     else {
 
-                        if (r.getCommitTs() < thresholdTs) {
+                        if (r.getCommitTs() <= thresholdTs) {
                             if (r.isData()) {
+                                LOGGER.info(
+                                        " ### Saving record for processing  ct: "
+                                                + r.getCommitTs()
+                                                + " threshold: "
+                                                + thresholdTs);
                                 minHeap.add(r);
+                                recToWriteToKafka++;
+                                // Sadly this is not true, the isLast just says for this trx if this
+                                // is the last record
+                                /*
+                                 * if (r.isLastInPartition()) {
+                                 * finishedPartitions.add(
+                                 * r.getPartition()); // we will not get more records for this partition
+                                 */
+                            }
+                            else {
+                                if (r.isFinishedPartition()) {
+                                    finishedPartitions.add(r.getPartition());
+                                    LOGGER.info(" ### finished partition size : " + finishedPartitions.size());
+                                }
                             } // heartbeat we can skip
                         }
                         else {
-                            kafkaProducer.saveForLater(rec);
+                            LOGGER.info(
+                                    " ### Saving record for later greater CT "
+                                            + r.getCommitTs()
+                                            + " threshold: "
+                                            + thresholdTs);
+                            long savedOffset = kafkaProducer.saveForLater(rec);
+                            if (intRec.isOriginUcsb()) {
+                                if (!isRebufferred) {
+                                    isRebufferred = true;
+                                    LOGGER.info(" ### Not gonna enter loop again, done at: " + savedOffset);
+
+                                    kafkaConsumer.pauseAt(
+                                            savedOffset); // we want to stop reading again from ucsb in same loop
+                                }
+                            }
                             finishedPartitions.add(r.getPartition());
+                            LOGGER.info(" ### finished partition size : " + finishedPartitions.size());
                         }
                         if (finishedPartitions.size() == partitionsToProcess.size()) {
+                            // writeToMysql();
+                            writeToKafka();
+                            kafkaProducer.putWatermark(Long.toString(thresholdTs));
+                            // this.daoFactory.getPartitionMetadataDao().updateLastWatermark(taskId, thresholdTs);
                             kafkaConsumer.commitOffsets();
-                            writeToMysql();
                             break;
                         }
                     }
                 }
+            }
+
+            Instant end = Instant.now();
+            long duration = ChronoUnit.SECONDS.between(start, end);
+            if (duration > 0) {
+                LOGGER.error(
+                        " Records processed : "
+                                + recProcessed
+                                + " with TPS : "
+                                + recProcessed / duration
+                                + "  and WPS : "
+                                + recToWriteToKafka / duration);
             }
 
             return true;
@@ -346,67 +588,118 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
 
             String trx = trxSub.substring(1, trxSub.indexOf("isLastRecordInTrans") - 3);
 
+            /*
+             * String isLastRecSub = trxSub.substring(trxSub.indexOf("=") + 2);
+             * isLastRecSub = isLastRecSub.substring(isLastRecSub.indexOf("=") + 1);
+             *
+             * String isLastRec = isLastRecSub.substring(0, 4);
+             *
+             * // not used
+             * boolean isLastRecForPartition = false;
+             * if (isLastRec.charAt(0) == 't') {
+             * isLastRecForPartition = true;
+             * }
+             */
+
             String recSub = trxSub.substring(trxSub.indexOf("recordSequence") + 16);
 
             String recCnt = recSub.substring(0, recSub.indexOf(",") - 1);
             long recSeq = Long.parseLong(recCnt.trim());
             String key = Long.toString(ct) + "_" + trx + "_" + recCnt;
 
-            Records r = new Records(key, rec, ct, true, part, recSeq, trx);
+            Records r = new Records(key, rec, ct, true, part, recSeq, trx, false);
             return r;
 
         }
         else {
-            String commitsub = rec.substring(rec.indexOf("timestamp") + 10);
+            if (rec.charAt(0) == 'H') {
+                String commitsub = rec.substring(rec.indexOf("timestamp") + 10);
 
-            String commit = commitsub.substring(0, commitsub.indexOf("Z") + 1);
-            Instant commitTsInst = Timestamp.parseTimestamp(commit).toSqlTimestamp().toInstant();
-            long ct = ChronoUnit.MICROS.between(Instant.EPOCH, commitTsInst);
+                String commit = commitsub.substring(0, commitsub.indexOf("Z") + 1);
+                Instant commitTsInst = Timestamp.parseTimestamp(commit).toSqlTimestamp().toInstant();
+                long ct = ChronoUnit.MICROS.between(Instant.EPOCH, commitTsInst);
 
-            String partSub = commitsub.substring(commitsub.indexOf("partitionToke") + 16);
+                String partSub = commitsub.substring(commitsub.indexOf("partitionToke") + 16);
 
-            String part = partSub.substring(0, partSub.indexOf("recordTimestamp") - 3);
-            Records r = new Records("key", rec, ct, false, part, 0l, "");
-            return r;
+                String part = partSub.substring(0, partSub.indexOf("recordTimestamp") - 3);
+                Records r = new Records("key", rec, ct, false, part, 0l, "", false);
+                return r;
+            }
+            else {
+
+                String partsub = rec.substring(rec.indexOf("=") + 1);
+
+                String part = partsub.substring(1, partsub.indexOf("timestamp") - 2);
+
+                String commit = partsub.substring(partsub.indexOf("timestamp") + 10);
+                Instant commitTsInst = Timestamp.parseTimestamp(commit).toSqlTimestamp().toInstant();
+                long ct = ChronoUnit.MICROS.between(Instant.EPOCH, commitTsInst);
+
+                Records r = new Records("key", rec, ct, false, part, 0l, "", true);
+                return r;
+            }
         }
     }
 
     private void writeToMysql() {
-        LOGGER.info("The size of minHeap is: " + minHeap.size());
+        LOGGER.error("The size of minHeap is: " + minHeap.size());
+        List<Records> list = new ArrayList<>();
         while (!minHeap.isEmpty()) {
             Records r = minHeap.poll();
-            insertToDB(r);
+            list.add(r);
+            // insertToDB(r);
         }
-
+        LOGGER.error("Insert to DB started : " + Timestamp.now().toString());
+        insertToDB(list);
+        LOGGER.error("Insert to DB ended : " + Timestamp.now().toString());
         return;
     }
 
-    private void insertToDB(Records r) {
+    private void writeToKafka() {
+        LOGGER.info("##The size of minHeap is: " + minHeap.size());
+        boolean shouldFlush = false;
+        while (!minHeap.isEmpty()) {
+            shouldFlush = true;
+            Records r = minHeap.poll();
+            Instant emitInst = Timestamp.now().toSqlTimestamp().toInstant();
+            long emitTs = ChronoUnit.MICROS.between(Instant.EPOCH, emitInst);
+            String rec = "Emit_timestamp:" + emitTs + "," + r.getValue();
+            kafkaProducer.putOrderedData(rec);
+        }
+        if (shouldFlush)
+            kafkaProducer.flushOrderedData();
+    }
+
+    private void insertToDB(List<Records> list) {
         Connection connObj = null;
         PreparedStatement pstmtObj = null;
 
         try {
-            connObj = bds.getConnection();
+            // connObj = bds.getConnection();
+            connObj = DriverManager.getConnection("jdbc:apache:commons:dbcp:test-poc");
             pstmtObj = connObj.prepareStatement(
                     "INSERT INTO OutTable(INSERT_TS,CT,TRX_ID,REC_SEQ,NUM_REC,PAYLOAD)"
                             + " VALUES(?,?,?,?,?,?)");
 
-            Instant instTs = Timestamp.now().toSqlTimestamp().toInstant();
-            long insertTs = ChronoUnit.MICROS.between(Instant.EPOCH, instTs);
+            for (Records r : list) {
+                Instant instTs = Timestamp.now().toSqlTimestamp().toInstant();
+                long insertTs = ChronoUnit.MICROS.between(Instant.EPOCH, instTs);
 
-            pstmtObj.setLong(1, insertTs);
+                pstmtObj.setLong(1, insertTs);
 
-            long commitTs = r.getCommitTs();
+                long commitTs = r.getCommitTs();
 
-            pstmtObj.setLong(2, commitTs);
-            pstmtObj.setString(3, r.getTrx());
+                pstmtObj.setLong(2, commitTs);
+                pstmtObj.setString(3, r.getTrx());
 
-            pstmtObj.setLong(4, r.getRecSeq());
+                pstmtObj.setLong(4, r.getRecSeq());
 
-            pstmtObj.setLong(5, 42l);
-            pstmtObj.setString(6, r.getValue());
+                pstmtObj.setLong(5, 42l);
+                pstmtObj.setString(6, r.getValue());
+                pstmtObj.addBatch();
+            }
 
-            int rowAffected = pstmtObj.executeUpdate();
+            pstmtObj.executeBatch();
         }
         catch (SQLException e) {
             e.printStackTrace();
