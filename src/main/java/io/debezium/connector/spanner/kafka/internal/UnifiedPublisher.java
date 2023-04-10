@@ -157,18 +157,20 @@ public class UnifiedPublisher {
     }
 
     public void putOrderedData(String rec) {
-        try {
+        // try {
 
-            ProducerRecord<String, String> record = new ProducerRecord<>("ordout", "dummyKey", rec);
-            orderedProducer.send(record).get();
-            // orderedProducer.flush();
-        }
-        catch (ExecutionException e) {
-            orderedProducer.close();
-            LOGGER.info("Error during publishing to the ordout Topic", e);
-        }
-        catch (InterruptedException e) {
-        }
+        ProducerRecord<String, String> record = new ProducerRecord<>("ordout", "dummyKey", rec);
+        orderedProducer.send(record);
+        // orderedProducer.flush();
+        // }
+        /*
+         * catch (ExecutionException e) {
+         * orderedProducer.close();
+         * LOGGER.info("Error during publishing to the ordout Topic", e);
+         * }
+         */
+        // catch (InterruptedException e) {
+        // }
     }
 
     public void flushOrderedData() {
@@ -188,6 +190,7 @@ public class UnifiedPublisher {
             ProducerRecord<String, String> record = new ProducerRecord<>("wm", "dummyKey", rec);
             wmProducer.send(record).get();
             wmProducer.flush();
+
         }
         catch (ExecutionException e) {
             wmProducer.close();

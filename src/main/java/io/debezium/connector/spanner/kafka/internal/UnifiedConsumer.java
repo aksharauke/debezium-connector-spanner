@@ -33,6 +33,7 @@ public class UnifiedConsumer {
     private boolean recordInitUcs;
     private ConsumerRecords<String, String> recordsUcsb;
     private ConsumerRecords<String, String> recordsUcs;
+    private ConsumerRecords<String, String> recordsWm;
     private Map<TopicPartition, OffsetAndMetadata> commitForUcsb;
     private Map<TopicPartition, OffsetAndMetadata> commitForUcs;
     List<ConsumerRecord<String, String>> partitionRecordsUcsb;
@@ -41,6 +42,8 @@ public class UnifiedConsumer {
     private long lastOffsetForUcs;
     private int ucsbIndex;
     private int ucsIndex;
+
+    private TopicPartition wmPartition;
 
     private boolean isPauseOnUcsbCalled;
     private long pauseOffsetForUcsb;
@@ -59,7 +62,7 @@ public class UnifiedConsumer {
                         ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                         "earliest",
                         ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG,
-                        900000,
+                        1800000,
                         ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,
                         false));
 
@@ -76,7 +79,7 @@ public class UnifiedConsumer {
                         ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                         "earliest",
                         ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG,
-                        900000,
+                        1800000,
                         ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,
                         false));
         consumerUcsb = new KafkaConsumer<>(props2);
@@ -111,10 +114,17 @@ public class UnifiedConsumer {
         isPauseOnUcsbCalled = false;
         pauseOffsetForUcsb = -1;
         crossedRead = false;
+        wmPartition = null;
     }
 
     private void recordsInitUcsb() {
         // consumerUcsb.poll(0);
+        if (commitForUcsb.size() > 0) {
+            for (TopicPartition part : commitForUcsb.keySet()) {
+                consumerUcsb.resume(Arrays.asList(part));
+                break;
+            }
+        }
         recordsUcsb = consumerUcsb.poll(Duration.ofMillis(100));
         recordInitUcsb = true;
 
@@ -146,12 +156,20 @@ public class UnifiedConsumer {
             ucsbIndex = 0;
             commitForUcsb.clear();
             commitForUcsb.put(partition, new OffsetAndMetadata(Long.valueOf(ucsbIndex + 1)));
+            consumerUcsb.pause(Arrays.asList(partition));
             break;
         }
     }
 
     private void recordsInitUcs() {
         // consumerUcs.poll(0);
+
+        if (commitForUcs.size() > 0) {
+            for (TopicPartition part : commitForUcs.keySet()) {
+                consumerUcs.resume(Arrays.asList(part));
+                break;
+            }
+        }
 
         recordsUcs = consumerUcs.poll(Duration.ofMillis(100));
         recordInitUcs = true;
@@ -177,6 +195,7 @@ public class UnifiedConsumer {
             ucsIndex = 0;
             commitForUcs.clear();
             commitForUcs.put(partition, new OffsetAndMetadata(Long.valueOf(ucsIndex + 1)));
+            consumerUcs.pause(Arrays.asList(partition));
             break;
         }
     }
@@ -237,6 +256,11 @@ public class UnifiedConsumer {
                     ucsbIndex--;
                     crossedRead = true;
                     LOGGER.info("##### Paused reading from ucsb, will read from ucs");
+
+                    for (TopicPartition part : commitForUcsb.keySet()) {
+                        consumerUcsb.pause(Arrays.asList(part));
+                        break;
+                    }
                     return readFromUcs();
                 }
             }
@@ -268,7 +292,7 @@ public class UnifiedConsumer {
                                 pair.getKey(), new OffsetAndMetadata(Long.valueOf(pauseOffsetForUcsb)));
                         break;
                     }
-                    LOGGER.info("##### Committing ucsb offset at pause " + pauseOffsetForUcsb);
+                    LOGGER.error("##### Committing ucsb offset at pause " + pauseOffsetForUcsb);
                     consumerUcsb.commitSync(commitForUcsb);
                     isPauseOnUcsbCalled = false;
                     pauseOffsetForUcsb = -1;
@@ -280,7 +304,7 @@ public class UnifiedConsumer {
                         commitForUcsb.put(pair.getKey(), new OffsetAndMetadata(Long.valueOf(lastOffset + 1)));
                         break;
                     }
-                    LOGGER.info("##### Committing ucsb offset " + lastOffset);
+                    LOGGER.error("##### Committing ucsb offset " + lastOffset);
                     consumerUcsb.commitSync(commitForUcsb);
                 }
                 // consumerUcsb.commitSync();
@@ -296,7 +320,7 @@ public class UnifiedConsumer {
                         commitForUcs.put(pair.getKey(), new OffsetAndMetadata(Long.valueOf(lastOffset + 1)));
                         break;
                     }
-                    LOGGER.info("##### Committing ucs offset " + lastOffset);
+                    LOGGER.error("##### Committing ucs offset " + lastOffset);
 
                     consumerUcs.commitSync(commitForUcs);
                 }
@@ -313,14 +337,24 @@ public class UnifiedConsumer {
     }
 
     public long getWatermark() {
-        ConsumerRecords<String, String> recordsWm = consumerWm.poll(Duration.ofMillis(100));
+        if (wmPartition != null) {
+            consumerWm.resume(Arrays.asList(wmPartition));
+        }
+        recordsWm = consumerWm.poll(Duration.ofMillis(100));
         if (recordsWm.count() == 0) {
             return 0l;
         }
         long wm = 0l;
+        for (TopicPartition partition : recordsWm.partitions()) {
+            wmPartition = partition;
+            break;
+        }
         for (ConsumerRecord<String, String> record : recordsWm) {
             wm = Long.parseLong(record.value());
             break;
+        }
+        if (wmPartition != null) {
+            consumerWm.pause(Arrays.asList(wmPartition));
         }
         return wm;
     }

@@ -210,7 +210,7 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
         catch (Exception ex) {
             LOGGER.warn("Error while creating topics");
         }
-
+        // this.daoFactory.getPartitionMetadataDao().clearLock();
         try {
             Class dirverClass = Class.forName(JDBC_DRIVER);
         }
@@ -306,7 +306,7 @@ public class SpannerEventDispatcher extends EventDispatcher<SpannerPartition, Ta
             }
 
             LOGGER.info(" ### Threshold timestamp: " + thresholdTs);
-            LOGGER.info(" ### The savedTs is : " + savedThresholdInst.toString());
+            LOGGER.error(" ### The savedTs is : " + savedThresholdInst.toString());
 
             /*
              * List<PartitionState> toPrintPart = taskSyncContext.getAllTaskStates().values().stream()

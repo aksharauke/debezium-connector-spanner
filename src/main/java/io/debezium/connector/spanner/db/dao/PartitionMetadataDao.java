@@ -358,4 +358,16 @@ public class PartitionMetadataDao {
                             return null;
                         });
     }
+
+    public void clearLock() {
+        Statement deleteStatement = Statement.newBuilder(" delete from PARTITIONLOCK where 1=1 ").build();
+
+        this.databaseClient
+                .readWriteTransaction()
+                .run(
+                        transaction -> {
+                            transaction.executeUpdate(deleteStatement);
+                            return null;
+                        });
+    }
 }
